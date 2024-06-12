@@ -1,0 +1,14 @@
+# TODO: freeze versions
+# geospatial
+geopandas  
+open-buildings
+pygdaltools
+overturemaps
+contextily
+rasterio
+# Shapely
+numpy
+matplotlib
+seaborn
+python-dotenv
+tqdm
