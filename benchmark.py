@@ -308,7 +308,12 @@ def save_benchmark_stats(df, output_file):
     
 
 # full benchmarking pipeline using multiprocessing over the country_list 
-def full_benchmark(country_list, file_formats, compression_types, data_dir, delete_output, test_load):
+def full_benchmark(country_list, file_formats, compression_types, data_dir, delete_output, test_load, env_vars=None):
+    
+    if env_vars is not None:
+        # set environment variables for gdal/ogr2ogr
+        for key, value in env_vars.items():
+            os.environ[key] = value
     
     print("Testing conversion performance...")
     proc_count = mp.cpu_count() - 1

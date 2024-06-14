@@ -2,3 +2,4 @@
 google-ms-open-buildings/*
 .conda
 .vscode
+*.cpython*
