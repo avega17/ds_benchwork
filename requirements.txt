@@ -12,3 +12,4 @@ matplotlib
 seaborn
 python-dotenv
 tqdm
+jupyter
