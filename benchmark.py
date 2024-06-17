@@ -1,4 +1,5 @@
 from osgeo import gdal
+import gdaltools 
 import geopandas as gpd
 import pandas as pd
 import numpy as np
@@ -11,6 +12,9 @@ import subprocess
 import pandas as pd
 import multiprocessing as mp
 import timeit
+
+FILE_FMT_MAP = {"geojson":".geojson", "shapefile":".shp", "flatgeobuf":".fgb", "geopackage":".gpkg"}
+FMT_GDAL_DRIVERS = {"geojson":"GeoJSON", "shapefile":"ESRI Shapefile", "flatgeobuf":"FlatGeobuf", "geopackage":"GPKG"}
 
 def download_with_progress(url, local_file_path):
     response = urllib.request.urlopen(url)
@@ -51,28 +55,22 @@ def load_geodataframe(input_file, country_code, output_format="parquet", test_lo
     load_time = None
     # load geopandas dataframe from geoparquet
     if output_format == "parquet":
-        # use timeit magic method to measure time taken to load
+        # use timeit to get TimeItResult object and extract median of runs 
         if test_load:
             print(f"Testing load time for {country_code}.parquet")
              # create a Timer object to measure the time taken by the function
-            timer = timeit.Timer(lambda: gpd.read_file(input_file))
-            # run the function once and return the Timer object
-            load_time = timer.timeit(number=1)
+            timer = timeit.Timer(lambda: gpd.read_parquet(input_file))
             # save median of all_runs
             load_time = np.median(timer.repeat(repeat=1, number=1))
         input_df = gpd.read_parquet(input_file)
     # load geopandas dataframe from other formats
     else:
         if test_load:
-            print(f"Testing load time for {input_file.split('/')[-1]}")
+            print(f"Testing load time for {input_file.split(os.sep)[-1]}")
              # create a Timer object to measure the time taken by the function
             timer = timeit.Timer(lambda: gpd.read_file(input_file))
-            # run the function once and return the Timer object
-            load_time = timer.timeit(number=1)
             # save median of all_runs
             load_time = np.median(timer.repeat(repeat=1, number=1))
-            # save median of all_runs 
-            load_time = np.median(load_time.all_runs)
         input_df = gpd.read_file(input_file)
     input_df.name = country_code
     print(f"Successfully loaded {country_code}.parquet into geopandas dataframe")
@@ -85,16 +83,17 @@ def pretty_print_df_info(input_df):
     print(input_df.head())
 
 def get_output_path(input_file, output_format):
+    global FILE_FMT_MAP
     # output path is same as input, but up two 
     # input has form /path/to/data/format/country_code.format
     country_code = input_file.split(os.sep)[-1].split(".")[0] # use same country code for output file name
     output_file = os.sep.join(input_file.split(os.sep)[:-2]) 
     # output file format is /path/to/data/format/country_code.format
-    output_file = f"{output_file}/{output_format}/{country_code}{file_fmt_map[output_format]}"
+    output_file = f"{output_file}/{output_format}/{country_code}{FILE_FMT_MAP[output_format]}"
     return output_file
 
 # use ogr2ogr to convert geoparquet to our target formats; delete output file and return time taken and file size
-def ogr_gdal_convert(input_file, output_format, delete_output=True, test_load=False):
+def ogr_gdal_convert(input_file, output_format, delete_output=True, test_load=False, multi_proc=False):
 
     output_file = get_output_path(input_file, output_format)
     convert_time = time.time()
@@ -103,9 +102,20 @@ def ogr_gdal_convert(input_file, output_format, delete_output=True, test_load=Fa
     # get gdal format name
     input_format = input_file.split(".")[-1] # get file extension
     print(f"Starting conversion from {input_format} to {output_format}")
-    gdal_format = format_gdal_names[output_format]
-    command = ["ogr2ogr", "-f", gdal_format, output_file, input_file]
-    result = subprocess.run(command, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    gdal_format = FMT_GDAL_DRIVERS[output_format]
+    
+    if multi_proc:
+        # get path of anaconda's gdal ogr2ogr with subprocess by capturing output of which ogr2ogr
+        ogr_path = subprocess.run(["which", "ogr2ogr"], check=True, stdout=subprocess.PIPE).stdout.decode().strip()
+        # use pygdaltools to avoid issues with gdal parquet driver not found in spawned processes
+        ogr = gdaltools.ogr2ogr(command_path=ogr_path)\
+            .set_input(input_file)\
+            .set_output(output_file)
+        ogr.execute()
+    else:
+        # use subprocess to run ogr2ogr command
+        command = ["ogr2ogr", "-f", gdal_format, output_file, input_file]
+        result = subprocess.run(command, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     t2 = time.time()
     convert_time = t2 - convert_time
     
@@ -113,7 +123,7 @@ def ogr_gdal_convert(input_file, output_format, delete_output=True, test_load=Fa
     if result.returncode == 0:
         # calculate file size of converted file and convert to MB
         file_size = os.path.getsize(output_file) / (1024 * 1024)
-        print(f"Successfully converted {input_file.split('/')[-1]} to {output_file.split('/')[-1]} in {convert_time:.2f}s")
+        print(f"Successfully converted {input_file.split(os.sep)[-1]} to {output_file.split(os.sep)[-1]} in {convert_time:.2f}s")
         print(f"Converted file size: {file_size:.2f} MB")
         
     else:
@@ -134,15 +144,16 @@ def ogr_gdal_convert(input_file, output_format, delete_output=True, test_load=Fa
     return convert_time, file_size, load_time
 
 # use geopandas to save to our target formats from existing dataframe; delete output file and return time taken and file size
-def geopandas_convert(input_df, output_format, delete_output=True):
+def geopandas_convert(input_df, data_dir, output_format, delete_output=True):
     
+    global FILE_FMT_MAP
     # get country_code from input_df
-    output_file = f"{open_buildings_path}/{output_format}/{input_df.name}{file_fmt_map[output_format]}"
+    output_file = f"{data_dir}/{output_format}/{input_df.name}{FILE_FMT_MAP[output_format]}"
     convert_time = time.time()
     load_time = None
     
     try:
-        input_df.to_file(output_file, driver=format_gdal_names[output_format])
+        input_df.to_file(output_file, driver=FMT_GDAL_DRIVERS[output_format])
         t2 = time.time()
         convert_time = t2 - convert_time
     except Exception as e:
@@ -157,7 +168,7 @@ def geopandas_convert(input_df, output_format, delete_output=True):
         for file in glob(f"{output_file.split('.')[0]}*"):
             os.remove(file) 
             
-    print(f"Successfully converted {input_df.name} gdf to {output_file.split('/')[-1]} in {convert_time:.2f}s")
+    print(f"Successfully converted {input_df.name} gdf to {output_file.split(os.sep)[-1]} in {convert_time:.2f}s")
     print(f"{output_format} file size: {file_size:.2f} MB")
 
     return convert_time, file_size
@@ -167,9 +178,9 @@ def duckdb_convert(input_file, output_format):
     output_file = get_output_path(input_file, output_format)
 
 # receive geopandas df, save file to disk using specified algorithm, delete output file and return time taken and file size
-def gdf_to_compressed_geoparquet(input_df, compression_type, test_load=False):
+def gdf_to_compressed_geoparquet(input_df, data_dir, compression_type, test_load=False):
     
-    output_file = os.path.join(open_buildings_path, "parquet", f"{input_df.name}_{compression_type}.parquet")
+    output_file = os.path.join(data_dir, "parquet", f"{input_df.name}_{compression_type}.parquet")
     convert_time = time.time()
     load_time = None
 
@@ -232,7 +243,7 @@ def convert_benchmark(country_code, file_formats, data_dir, delete_output, test_
         # gdal/ogr2ogr conversion
         ogr_time, ogr_size, load_time = ogr_gdal_convert(input_file, output_format, delete_output, test_load)
         # geopandas conversion
-        gpd_time, gpd_size = geopandas_convert(country_gdf, output_format, delete_output)
+        gpd_time, gpd_size = geopandas_convert(country_gdf, data_dir, output_format, delete_output)
         # duckdb conversion
         # TODO: implement duckdb conversion
         
@@ -276,7 +287,7 @@ def compress_benchmark(country_code, compression_types, data_dir, delete_output,
         
         ctype = "None" if ctype is None else ctype
         compression_stats[country_code][ctype] = compress_stats.copy()
-        compress_time, compress_size, load_time = gdf_to_compressed_geoparquet(country_gdf, ctype, test_load=test_load)
+        compress_time, compress_size, load_time = gdf_to_compressed_geoparquet(country_gdf, data_dir, ctype, test_load=test_load)
         compression_stats[country_code][ctype]["compression_time"] = compress_time
         compression_stats[country_code][ctype]["compression_size"] = compress_size
         compression_stats[country_code][ctype]["load_time"] = load_time
@@ -306,30 +317,54 @@ def save_benchmark_stats(df, output_file):
     df.to_csv(output_file, index=False)
     print(f"Saved benchmark stats with {len(df)} records to {output_file} ({os.path.getsize(output_file) / 1024:.2f} KB)")
     
+    
+def init_worker():
+    # Set the GDAL environment variables
+    os.environ['CONDA_PREFIX'] = '/Volumes/Expanse/mambaforge/envs/geospatial'
+    os.environ['GDAL_DRIVER_PATH'] = '/Volumes/Expanse/mambaforge/envs/geospatial/lib/gdalplugins'
+    # add prev to LD_LIBRARY_PATH 
+    os.environ['LD_LIBRARY_PATH'] = f"{os.environ['CONDA_PREFIX']}/lib:{os.environ['CONDA_PREFIX']}/lib/gdalplugins:{os.environ['LD_LIBRARY_PATH']}"
+    os.environ['GDAL_DATA'] = '/Volumes/Expanse/mambaforge/envs/geospatial/share/gdal'
+
+    # Explicitly register GDAL drivers
+    gdal.UseExceptions()
+    gdal.AllRegister()
 
 # full benchmarking pipeline using multiprocessing over the country_list 
-def full_benchmark(country_list, file_formats, compression_types, data_dir, delete_output, test_load, env_vars=None):
+def full_benchmark(country_list, file_formats, compression_types, data_dir, delete_output, test_load, env_vars=None, multi_proc=False, save_results=True):
     
-    if env_vars is not None:
-        # set environment variables for gdal/ogr2ogr
-        for key, value in env_vars.items():
-            os.environ[key] = value
+    conversion_stats = {}
+    compression_stats = {}
     
-    print("Testing conversion performance...")
-    proc_count = mp.cpu_count() - 1
-    # use multiprocessing to benchmark conversion performance for each country
-    with mp.Pool(proc_count) as pool:
-        conversion_stats = pool.starmap(convert_benchmark, [(country_code, file_formats, data_dir, delete_output, test_load) for country_code in country_list])
-    # go through results list, flatten and concatenate into single dataframe, then save to csv 
-    conversion_stas = pd.concat([flatten_benchmark_stats(stats, "output_format", ["processing_time", "file_size", "load_time"]) for stats in conversion_stats])
-    save_benchmark_stats(conversion_stats, "conversion_benchmark.csv")
+    if multi_proc:
+        # process each country in parallel using multiprocessing Pool
+        proc_count = mp.cpu_count() - 1
+        # use multiprocessing to benchmark conversion performance for each country
+        with mp.Pool(proc_count) as pool:
+            conversion_stats = pool.starmap(convert_benchmark, [(country, file_formats, data_dir, delete_output, test_load) for country in country_list])
+        # go through results list, flatten and concatenate into single dataframe, then save to csv 
+        conversion_stats = pd.concat([flatten_benchmark_stats(stats, "output_format", ["processing_time", "file_size", "load_time"]) for stats in conversion_stats])
+        
+    else:
+        # we'll be updating our stats dict each iteration before flattening and saving to csv
+        for country_code in country_list:
+            print(f"Testing conversion performance for {country_code}...")
+            conversion_stats[country_code] = convert_benchmark(country_code, file_formats, data_dir, delete_output, test_load)
+            print(f"Conversion benchmark for {country_code} complete.")
+            
+            print(f"Testing compression performance for {country_code}...")
+            compression_stats = compress_benchmark(country_code, compression_types, data_dir, delete_output, test_load)
+            print(f"Compression benchmark for {country_code} complete.")
+            
+        # flatten into df
+        convert_df = flatten_benchmark_stats(conversion_stats, "output_format", ["processing_time", "file_size", "load_time"])
+        compress_df = flatten_benchmark_stats(compression_stats, "compression_type", ["compression_time", "compression_size", "load_time", "geom_count"])
+
+    if save_results:
+        # concatenate country codes as part of filename
+        convert_filename = "_".join(country_list) + "_conversion_benchmark.csv"
+        save_benchmark_stats(convert_df, convert_filename)
+        compress_filename = "_".join(country_list) + "_compression_benchmark.csv"
+        save_benchmark_stats(compress_df, compress_filename)
     
-    print("Testing compression performance...")
-    # use multiprocessing to benchmark compression performance for each country
-    with mp.Pool(proc_count) as pool:
-        compression_stats = pool.starmap(compress_benchmark, [(country_code, compression_types, data_dir, delete_output, test_load) for country_code in country_list])
-    # go through results list, flatten and concatenate into single dataframe, then save to csv
-    compression_stats = pd.concat([flatten_benchmark_stats(stats, "compression_type", ["compression_time", "compression_size", "load_time", "geom_count"]) for stats in compression_stats])
-    save_benchmark_stats(compression_stats, "compression_benchmark.csv")
-    
-    return conversion_stats, compression_stats
+    return convert_df, compress_df
