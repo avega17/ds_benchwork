@@ -3,3 +3,8 @@ google-ms-open-buildings/*
 .conda
 .vscode
 *.cpython*
+*.csv
+*.geojson
+*.shp
+*.fgb
+*.gpkg

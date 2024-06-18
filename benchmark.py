@@ -63,7 +63,6 @@ def load_geodataframe(input_file, country_code, output_format="parquet", test_lo
             # save median of all_runs
             load_time = np.median(timer.repeat(repeat=1, number=1))
         input_df = gpd.read_parquet(input_file)
-    # load geopandas dataframe from other formats
     else:
         if test_load:
             print(f"Testing load time for {input_file.split(os.sep)[-1]}")
@@ -71,6 +70,7 @@ def load_geodataframe(input_file, country_code, output_format="parquet", test_lo
             timer = timeit.Timer(lambda: gpd.read_file(input_file))
             # save median of all_runs
             load_time = np.median(timer.repeat(repeat=1, number=1))
+            
         input_df = gpd.read_file(input_file)
     input_df.name = country_code
     print(f"Successfully loaded {country_code}.parquet into geopandas dataframe")
@@ -295,24 +295,21 @@ def compress_benchmark(country_code, compression_types, data_dir, delete_output,
         
     return compression_stats
 
-def flatten_benchmark_stats(stats, column_name, stats_names):
+def flatten_benchmark_stats(benchmark_stats, column_name, stats_names):
     
     # both dicts have the same two levels of keys (country_code and output_format/compression_type)
     # flatten dict into single level of columns
     data = []
-    for country_code, country_stats in stats.items():
-        # print(country_code, country_stats)
-        for key, stats in country_stats.items():
-            # print(key, stats)
+    for country_code, country_stats in benchmark_stats.items():
+        for key, stats in country_stats.items(): 
             row = {"country_code": country_code, column_name: key}
             for stat_name in stats_names:
-                row[stat_name] = stats[stat_name]
+                row[stat_name] = stats[stat_name]  # Fix: Access stats using the 'stats' variable instead of 'benchmark_stats'][stat_name]
             data.append(row)
     
     df = pd.DataFrame(data)
     return df
 
-# expects already flattened dataframe to be saved as-is to csv
 def save_benchmark_stats(df, output_file):
     df.to_csv(output_file, index=False)
     print(f"Saved benchmark stats with {len(df)} records to {output_file} ({os.path.getsize(output_file) / 1024:.2f} KB)")
@@ -343,7 +340,13 @@ def full_benchmark(country_list, file_formats, compression_types, data_dir, dele
         with mp.Pool(proc_count) as pool:
             conversion_stats = pool.starmap(convert_benchmark, [(country, file_formats, data_dir, delete_output, test_load) for country in country_list])
         # go through results list, flatten and concatenate into single dataframe, then save to csv 
-        conversion_stats = pd.concat([flatten_benchmark_stats(stats, "output_format", ["processing_time", "file_size", "load_time"]) for stats in conversion_stats])
+        convert_df = pd.concat([flatten_benchmark_stats(stats, "output_format", ["processing_time", "file_size", "load_time"]) for stats in conversion_stats])
+        
+        # use multiprocessing to benchmark compression performance for each country
+        with mp.Pool(proc_count) as pool:
+            compression_stats = pool.starmap(compress_benchmark, [(country, compression_types, data_dir, delete_output, test_load) for country in country_list])
+        # go through results list, flatten and concatenate into single dataframe, then save to csv
+        compress_df = pd.concat([flatten_benchmark_stats(stats, "compression_type", ["compression_time", "compression_size", "load_time", "geom_count"]) for stats in compression_stats])
         
     else:
         # we'll be updating our stats dict each iteration before flattening and saving to csv
