@@ -44,11 +44,17 @@ def fetch_geoparquet(country_code, output_dir):
     # fetch geoparquet from source.coop
     url = f"{combined_open_buildings_uri}/country_iso={country_code}/{country_code}.parquet"
     output_file = os.path.join(output_dir, f"{country_code}.parquet")
-    t1 = time.time()
-    download_with_progress(url, output_file)
-    t2 = time.time()
-    print(f"Succesfully downloaded {country_code}.parquet in {t2-t1} seconds and saved to {output_file}")
-    return output_file
+    
+    # verify if file already exists then return path to file
+    if os.path.exists(output_file):
+        print(f"{country_code}.parquet already exists at {output_file}")
+        return output_file
+    else: 
+        t1 = time.time()
+        download_with_progress(url, output_file)
+        t2 = time.time()
+        print(f"Succesfully downloaded {country_code}.parquet in {t2-t1} seconds and saved to {output_file}")
+        return output_file
 
 def load_geodataframe(input_file, country_code, output_format="parquet", test_load=False):
 
@@ -350,7 +356,7 @@ def full_benchmark(country_list, file_formats, compression_types, data_dir, dele
         
     else:
         # we'll be updating our stats dict each iteration before flattening and saving to csv
-        for country_code in country_list:
+        for country_code in tqdm(country_list, desc="Benchmarking countries"):
             print(f"Testing conversion performance for {country_code}...")
             conversion_stats[country_code] = convert_benchmark(country_code, file_formats, data_dir, delete_output, test_load)
             print(f"Conversion benchmark for {country_code} complete.")

@@ -4,7 +4,11 @@ google-ms-open-buildings/*
 .vscode
 *.cpython*
 *.csv
+*.png
+*.jpg
 *.geojson
 *.shp
 *.fgb
 *.gpkg
+# duckdb tmp files
+*.tmp
